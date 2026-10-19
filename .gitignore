@@ -15,3 +15,5 @@ dist/
 *.sqlite
 *.sqlite3
 .superpowers/
+.qdrant/
+.fastembed_cache/

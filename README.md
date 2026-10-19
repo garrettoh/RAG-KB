@@ -43,9 +43,17 @@ after changing configuration. `Settings(_env_file=...)` selects a different file
 | `CONNECTWISE_PUBLIC_KEY` | Optional public API credential, masked as `SecretStr` |
 | `CONNECTWISE_PRIVATE_KEY` | Optional private API credential, masked as `SecretStr` |
 | `CONNECTWISE_CLIENT_ID` | Optional client credential, masked as `SecretStr` |
-| `QDRANT_URL` | `http://localhost:6333` |
+| `QDRANT_MODE` | `embedded`; optional `remote` connects to `QDRANT_URL` |
+| `QDRANT_PATH` | `.qdrant`; embedded storage directory, or `:memory:` |
+| `QDRANT_URL` | `http://localhost:6333`; used only in remote mode |
 | `QDRANT_COLLECTION` | `knowledge_base` |
 | `QDRANT_API_KEY` | Optional API credential, masked as `SecretStr` |
+| `QDRANT_TIMEOUT_SECONDS` | `15`; remote timeout, at most 120 seconds |
+| `EMBEDDING_PROVIDER` | `hash`; optional `fastembed` needs the extra below |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5`; only used by FastEmbed |
+| `EMBEDDING_DIMENSION` | `384`; must match the FastEmbed model when selected |
+| `EMBEDDING_CACHE_DIR` | `.fastembed_cache`; optional model cache |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `150` characters; overlap must be smaller than size |
 | `OPENAI_API_KEY` | Optional API credential, masked as `SecretStr` |
 | `DRAFT_PROVIDER` | `local`; deterministic extraction, or optional `ollama` / `openai` |
 | `DRAFT_TIMEOUT_SECONDS` | `30`; positive HTTP timeout, at most 120 seconds |
@@ -227,6 +235,143 @@ expose async `generate(sanitized_input)` and `aclose()`. The processor flushes;
 the caller commits or rolls back. Set `application.state.draft_provider_factory`
 to inject a provider; the route dependency closes it after success or failure.
 
+## Local review and search demo
+
+This workflow needs no API key, Qdrant server, LLM, or model download. From the
+repository root, run these commands in the first PowerShell terminal. Setting
+these values explicitly also overrides optional providers in your `.env`:
+
+```powershell
+$env:DEMO_MODE = 'true'
+$env:DRAFT_PROVIDER = 'local'
+$env:EMBEDDING_PROVIDER = 'hash'
+$env:EMBEDDING_DIMENSION = '384'
+$env:QDRANT_MODE = 'embedded'
+.venv/Scripts/python.exe -m app.demo
+.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+The seed command stores three synthetic tickets and three **pending** drafts:
+Orchard network (`1001`, tenant `101`), Harbor network (`2002`, tenant `202`), and
+the generic PDF toolbar (`2001`, global), plus two synthetic assets. It always
+uses synthetic ingestion and local extraction, even if optional live source,
+drafting, or embedding providers are configured. It never calls a model/vector
+provider or approves content. Repeating the command preserves existing demo
+drafts, including their review status. The older ingestion fixtures remain two
+tickets; `2002` is added by this CLI only.
+
+In a second PowerShell terminal, list and inspect each complete draft:
+
+```powershell
+$kbBase = 'http://127.0.0.1:8000/api/v1/kb'
+$drafts = Invoke-RestMethod "$kbBase/drafts"
+$drafts | Format-Table article_id, title, scope, target_tenant_id, status
+$globalDraft = $drafts | Where-Object title -eq 'Synthetic demo ticket 2001'
+$orchardDraft = $drafts | Where-Object title -eq 'Synthetic demo ticket 1001'
+$harborDraft = $drafts | Where-Object title -eq 'Synthetic demo ticket 2002'
+Invoke-RestMethod "$kbBase/drafts/$($globalDraft.article_id)" | Format-List *
+Invoke-RestMethod "$kbBase/drafts/$($orchardDraft.article_id)" | Format-List *
+Invoke-RestMethod "$kbBase/drafts/$($harborDraft.article_id)" | Format-List *
+# Fresh pending drafts are absent from search:
+Invoke-RestMethod "$kbBase/search?query_str=network%20toolbar&tenant_id=101"
+```
+
+After reviewing the scope, title, summary, and steps, explicitly approve each
+article you want published. Approval indexes the article immediately:
+
+```powershell
+Invoke-RestMethod -Method Post "$kbBase/drafts/$($globalDraft.article_id)/approve"
+Invoke-RestMethod -Method Post "$kbBase/drafts/$($orchardDraft.article_id)/approve"
+Invoke-RestMethod -Method Post "$kbBase/drafts/$($harborDraft.article_id)/approve"
+# Global PDF content only:
+Invoke-RestMethod "$kbBase/search?query_str=network%20toolbar" | Format-Table article_id, scope, tenant_id, title
+# Global PDF content plus Orchard's network article; no Harbor article:
+Invoke-RestMethod "$kbBase/search?query_str=network%20toolbar&tenant_id=101" | Format-Table article_id, scope, tenant_id, title
+# Global PDF content plus Harbor's network article; no Orchard article:
+Invoke-RestMethod "$kbBase/search?query_str=network%20toolbar&tenant_id=202" | Format-Table article_id, scope, tenant_id, title
+```
+
+The same protected management API supports `GET /drafts?limit=100&offset=0`,
+`GET /drafts/{article_id}`, `POST /drafts/{article_id}/approve`, and
+`GET /search?query_str=...&tenant_id=101&limit=10`. IDs must be positive integers;
+search requires nonblank text of at most 4000 characters. Search returns ranked
+chunks with article ID, scope, tenant ID, sanitized category/title/text and score.
+One article can return several chunks. Extra caller parameters cannot override
+the internal scope filter. Live mode requires the management bearer header on
+all these routes. Selecting a tenant ID is a retrieval filter; deployment code
+must separately authorize which tenant a caller may select.
+
+The default hash embedding uses normalized lexical token counts in deterministic
+hash buckets. It is a useful zero-download local fallback, not a learned semantic
+model: synonyms may fail to match, collisions can affect rank, and a ranked result
+does not guarantee relevance. Search retrieves content, without generating an
+LLM answer. Local extraction and hash search both work without keys. Optional
+Ollama drafting requires a running server and an installed model; optional OpenAI
+drafting requires a key. Neither silently falls back when selected and failing.
+
+For genuine local semantic embeddings, install the optional package and select a
+supported model and matching dimension:
+
+```powershell
+.venv/Scripts/python.exe -m pip install -e '.[fastembed]'
+$env:EMBEDDING_PROVIDER = 'fastembed'
+$env:EMBEDDING_MODEL = 'BAAI/bge-small-en-v1.5'
+$env:EMBEDDING_DIMENSION = '384'
+$env:QDRANT_COLLECTION = 'knowledge_base_fastembed'
+```
+
+FastEmbed loads only when search/indexing first needs it; first use can download
+model weights. It requires network access or an already populated cache. No model
+is installed/downloaded by the default workflow or tests. The adapter follows
+the official [FastEmbed usage](https://qdrant.github.io/fastembed/). Set
+`QDRANT_MODE=remote`, `QDRANT_URL`, and optionally `QDRANT_API_KEY` for a separate
+Qdrant service. Remote requests include sanitized chunks/metadata or sanitized
+query vectors; IDs and scope metadata remain necessary for isolation.
+
+Embedded Qdrant is a real on-disk vector store. Use one application process per
+storage path (do not use multiple Uvicorn workers with that path). The app lazily
+caches one client/model per app, serializes local operations across worker
+threads, and closes the client on shutdown. Collection schemas encode a hash of
+provider, model and dimension in an immutable named-vector key; incompatible
+collections are rejected, including different providers with equal dimensions.
+Choose a new collection and explicitly approve existing articles again to rebuild
+when changing embedding settings. Existing collections without this signature
+are also rejected.
+
+Before indexing, all content and textual metadata are sanitized again. Documents
+are chunked with overlap and stable article/chunk IDs; reindexing removes old
+chunks. Qdrant filters before ranking: `scope=global AND tenant_id=null`, plus
+`scope=tenant AND tenant_id=<exact requested ID>` only when supplied. The design
+uses Qdrant's official [filter conditions](https://qdrant.tech/documentation/search/filtering/).
+Every returned chunk is checked against current SQL status, scope/target and a
+sanitized content revision; pending, deleted, reassigned or changed SQL records
+are hidden. Sanitization has the limitations listed above and raw source tickets
+remain in SQLite.
+
+SQL and Qdrant do not share an atomic transaction. Approval first commits
+`approved`, then replaces vectors, then commits `indexed` only after vector
+success. A vector/model failure or final SQL failure leaves the durable approved
+checkpoint for retry; partial or old points are hidden by SQL checks. A crash
+between these steps can likewise leave an approved article. Repeat the approval
+request after correcting configuration/storage to replace all its chunks and
+finish indexing. This is idempotent for the same content and does not add SQL
+drafts. Stale hidden chunks may consume ranking slots until reindexed; restore
+or rebuild vector storage if its files are lost. Review approval is a deliberate
+management action, never a side effect of drafting or seeding.
+
+Python entry points are `VectorStore(client, embedding, collection)`,
+`HashEmbedding(dimension=384)`, `FastEmbedEmbedding(model, dimension, cache_dir)`,
+`create_vector_store(settings)`, `get_app_store(application)`,
+`index_article(session, approved_draft, store)`, and
+`search_knowledge_base(query_str, tenant_id=None, *, store=None, session=None,
+application=None, limit=10)`. The public search callable accepts an explicit
+store/session or uses the selected app's lazy store/session factory; omitting
+the app uses `app.main.app`. No tenant/filter is stored globally. Indexing owns
+its SQL checkpoint/final commits; don't bundle unrelated pending SQL writes in
+the same session. A direct pending draft is rejected by the indexing service.
+Inject `application.state.vector_store_factory` or `application.state.vector_store`
+for custom application setup; the app owns shutdown cleanup.
+
 ## Database and sessions
 
 - `RawTicket`: integer external `ticket_id`, integer `company_id`, `summary`,
@@ -256,8 +401,8 @@ SQLite in-memory databases are supported across FastAPI request threads. Engines
 are disposed during shutdown.
 
 Schema creation uses `create_all`, which creates missing tables and does not
-migrate existing tables. Schema migrations, tenant authorization, retrieval and
-article workflow APIs remain separate work. The health route reports application
+migrate existing tables. Schema migrations and deployment tenant authorization
+remain separate work. The health route reports application
 liveness.
 
 ## Tests
@@ -274,3 +419,7 @@ to in-memory SQLite, plus ConnectWise authentication, pagination, failure handli
 ingestion replay, company isolation, configuration sync, and live route secrets.
 Remote client tests use `httpx.MockTransport`. The Starlette dependency stays
 below 1.0 to retain compatibility with HTTPX 0.x in the test client.
+Retrieval/workflow tests use real embedded Qdrant and hash embeddings, including
+isolation, review gating, stale/failed indexing and retries, model signatures,
+shutdown, and a no-key CLI/HTTP review workflow. FastEmbed model behavior is mocked
+at the optional package boundary, so tests never download model weights.

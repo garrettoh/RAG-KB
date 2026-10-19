@@ -1,6 +1,7 @@
 """FastAPI entry point; database initialization belongs to application startup."""
 
 from contextlib import asynccontextmanager
+from threading import RLock
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -14,6 +15,7 @@ from app.api.kb import router as kb_router
 from app.agent_processor import DraftProviderError
 from app.connectwise_client import IntegrationError
 from app.ingestion import IngestionConflict
+from app.vector_db import VectorStoreError
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -31,14 +33,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             Base.metadata.create_all(bind=db_engine)
             yield
         finally:
+            with application.state.vector_store_lock:
+                if application.state.vector_store is not None:
+                    application.state.vector_store.close()
+                    application.state.vector_store = None
             db_engine.dispose()
 
     application = FastAPI(title="RAG Knowledge Base", lifespan=lifespan)
     application.state.settings = selected_settings
     application.state.engine = db_engine
     application.state.session_factory = session_factory
+    application.state.vector_store = None
+    application.state.vector_store_lock = RLock()
     application.include_router(connectwise_router)
     application.include_router(kb_router)
+
+    @application.exception_handler(VectorStoreError)
+    async def vector_store_error(request, exc: VectorStoreError):
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
     @application.exception_handler(DraftProviderError)
     async def draft_provider_error(request, exc: DraftProviderError):

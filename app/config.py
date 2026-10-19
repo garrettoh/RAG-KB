@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: SecretStr | None = None
     qdrant_collection: str = "knowledge_base"
+    qdrant_mode: Literal["embedded", "remote"] = "embedded"
+    qdrant_path: str = ".qdrant"
+    qdrant_timeout_seconds: int = Field(default=15, gt=0, le=120)
+    embedding_provider: Literal["hash", "fastembed"] = "hash"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_dimension: int = Field(default=384, gt=0, le=8192)
+    embedding_cache_dir: str = ".fastembed_cache"
+    chunk_size: int = Field(default=1000, ge=32, le=10000)
+    chunk_overlap: int = Field(default=150, ge=0, le=9999)
 
     openai_api_key: SecretStr | None = None
     draft_provider: Literal["local", "ollama", "openai"] = "local"
@@ -37,6 +46,12 @@ class Settings(BaseSettings):
     openai_draft_model: str = Field(default="gpt-4o-mini", min_length=1)
     ollama_base_url: str = "http://localhost:11434"
     ollama_draft_model: str = Field(default="llama3.2", min_length=1)
+
+    @model_validator(mode="after")
+    def validate_chunk_overlap(self):
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size.")
+        return self
 
 
 @lru_cache
