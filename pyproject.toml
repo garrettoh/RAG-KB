@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rag-kb"
 version = "0.1.0"
-description = "Multi-tenant knowledge base: Phase 1 application and database foundation"
+description = "Multi-tenant knowledge base with synthetic and live ConnectWise ingestion"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -15,10 +15,11 @@ dependencies = [
     # Keep FastAPI's TestClient compatible with the HTTPX 0.x test dependency.
     "starlette>=0.46,<1",
     "uvicorn>=0.32,<1",
+    "httpx>=0.27,<1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<10", "httpx>=0.27,<1"]
+dev = ["pytest>=8.3,<10"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

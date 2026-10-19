@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "sqlite:///./rag_kb.db"
+    demo_mode: bool = True
+    management_token: SecretStr | None = None
+    webhook_secret: SecretStr | None = None
+    connectwise_timeout_seconds: float = Field(default=15, gt=0, le=120)
 
     connectwise_url: str | None = None
     connectwise_company_id: str | None = None

@@ -1,7 +1,7 @@
 # RAG-KB
 
-Phase 1 foundation for a multi-tenant knowledge base: FastAPI, environment
-configuration, and SQLAlchemy 2 with SQLite. Python 3.13 or newer is required.
+Multi-tenant knowledge base foundation with FastAPI, SQLAlchemy 2/SQLite,
+and synthetic or live ConnectWise ingestion. Python 3.13 or newer is required.
 
 ## Install and run
 
@@ -34,7 +34,11 @@ after changing configuration. `Settings(_env_file=...)` selects a different file
 | Variable | Default / purpose |
 | --- | --- |
 | `DATABASE_URL` | `sqlite:///./rag_kb.db`; relative to the launch directory |
-| `CONNECTWISE_URL` | Optional ConnectWise Manage base URL |
+| `DEMO_MODE` | `true`; use synthetic ConnectWise records without credentials |
+| `MANAGEMENT_TOKEN` | Bearer token required by live management routes |
+| `WEBHOOK_SECRET` | Separate shared secret required by the live webhook |
+| `CONNECTWISE_TIMEOUT_SECONDS` | `15`; positive HTTP timeout, at most 120 seconds |
+| `CONNECTWISE_URL` | Full HTTPS API root, e.g. `https://your-host/v4_6_release/apis/3.0` |
 | `CONNECTWISE_COMPANY_ID` | Optional ConnectWise login company identifier |
 | `CONNECTWISE_PUBLIC_KEY` | Optional public API credential, masked as `SecretStr` |
 | `CONNECTWISE_PRIVATE_KEY` | Optional private API credential, masked as `SecretStr` |
@@ -45,8 +49,90 @@ after changing configuration. `Settings(_env_file=...)` selects a different file
 | `OPENAI_API_KEY` | Optional API credential, masked as `SecretStr` |
 
 `.env`, SQLite files, caches, and virtual environments are ignored by git. Keep
-real credentials out of source files. Service settings are loaded only; Phase 1
-makes no ConnectWise, Qdrant, or OpenAI requests.
+real credentials out of source files. Default demo operation makes no remote
+requests. Qdrant and OpenAI are not initialized by ingestion.
+
+## ConnectWise ingestion
+
+Run the app using the installation command above. Default `DEMO_MODE=true`
+provides two entirely synthetic companies: Example Orchard (`101`, ticket
+`1001`) and Example Harbor (`202`, ticket `2001`). No API keys, downloads or
+external servers are required. In PowerShell, ingest a ticket and sync each
+company's closed tickets and configurations:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/webhooks/connectwise -ContentType 'application/json' -Body '{"ticket_id":1001}'
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/connectwise/sync/101
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/connectwise/sync/202
+```
+
+The webhook's JSON contract is exactly `{"ticket_id":1001}`: a positive integer
+with no extra fields. A ConnectWise callback relay must translate its native
+notification into this documented payload; native callback bodies are not
+accepted directly. The event is only a notification: ingestion fetches the
+authoritative ticket and time entries and requires `closedFlag` to be the JSON
+boolean `true`. An open ticket returns `{"status":"ignored","ticket_id":...}`;
+a stored ticket returns `{"status":"ingested","ticket_id":...}`. Event-provided
+company IDs or claimed resolutions are not accepted. Invalid payloads return
+422. A replay updates the same row. External ticket/configuration IDs cannot
+move between companies; collisions return 409. A failed company sync rolls back
+its entire database transaction. Sync counts describe processed records, so a
+repeat sync reports the same counts while updating existing rows.
+
+`RawTicket.raw_payload` retains both `ticket` and `time_entries` unchanged.
+Internal analysis includes the ticket's `internalAnalysis`, time-entry
+`internalNotes`, and notes marked `addToInternalAnalysisFlag=true`. Resolution
+includes the ticket's `resolution` and notes marked
+`addToResolutionFlag=true`. Other notes remain in the raw payload. Ingestion
+stores raw source content in SQLite; access to this database must be restricted.
+This phase does not create or approve KB drafts.
+
+For live operation set `DEMO_MODE=false`, configure all five `CONNECTWISE_*`
+credentials/root settings above, plus independent `WEBHOOK_SECRET` and
+`MANAGEMENT_TOKEN`. The client uses Basic authentication with username
+`<login-company>+<public-key>`, private key as password, and a `clientId` header.
+The login company string is distinct from numeric customer company IDs.
+Authorized live operations fail with 503 if credentials are missing; live
+failures never switch to synthetic records. HTTP failures return 502, and
+connectivity/timeout failures return 503, without upstream response bodies or
+credential-bearing URLs. Requests use bounded timeouts and pagination; redirects
+are rejected. Clients are closed after each request.
+
+```powershell
+$hookHeaders = @{ 'X-Webhook-Secret' = $env:WEBHOOK_SECRET }
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/webhooks/connectwise -Headers $hookHeaders -ContentType 'application/json' -Body '{"ticket_id":12345}'
+$managementHeaders = @{ Authorization = "Bearer $env:MANAGEMENT_TOKEN" }
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/connectwise/sync/101 -Headers $managementHeaders
+```
+
+Live routes reject missing/incorrect secrets with 401 and deny access with 503
+when their required secret is unconfigured. Demo routes bypass authentication
+and are intended for local development. A management token grants management
+access; supplied customer IDs do not establish end-user tenant authorization.
+Deployment identity and tenant authorization remain a separate concern.
+
+The live adapter reads `service/tickets`, `service/tickets/{id}`, `time/entries`
+and `company/configurations`, with `conditions`, `page`, `pageSize`, and stable
+`orderBy=id asc`. Verify these fields and member permissions against your PSA
+version before live deployment. ConnectWise's official
+[REST reference](https://developer.connectwise.com/Products/ConnectWise_PSA/REST)
+and [authentication guide](https://developer.connectwise.com/Products/Manage/Developer_Guide/Authentication)
+require developer sign-in; no live credentials were available to certify a
+deployment. Transport behavior follows the official HTTPX
+[async client](https://www.python-httpx.org/async/) and
+[timeout](https://www.python-httpx.org/advanced/timeouts/) documentation.
+
+Python integration interfaces are `ConnectWiseClient(settings, transport=...)`
+and `DemoConnectWiseClient()`, both exposing async `fetch_closed_tickets(company_id=None)`,
+`fetch_ticket(ticket_id)`, `fetch_time_entries(ticket_id)`,
+`fetch_configurations(company_id)`, and `aclose()`. Both support `async with`.
+`ingest_ticket(session, client, ticket_id)` returns `RawTicket | None`;
+`sync_company(session, client, company_id)` returns ticket/asset counts. Services
+flush writes; callers own commit/rollback. API dependencies expose
+`get_app_settings`, `get_connectwise_client`, `require_management_auth`, and
+`require_webhook_auth`; `get_db` remains in `app.database`. For a custom adapter,
+set `application.state.connectwise_client_factory = lambda settings: adapter`;
+the request dependency owns closing that adapter.
 
 ## Database and sessions
 
@@ -77,9 +163,9 @@ SQLite in-memory databases are supported across FastAPI request threads. Engines
 are disposed during shutdown.
 
 Schema creation uses `create_all`, which creates missing tables and does not
-migrate existing tables. Schema migrations, service integrations, tenant
-authorization, ingestion, retrieval, and article workflow APIs belong to later
-phases. The health route reports application liveness.
+migrate existing tables. Schema migrations, tenant authorization, retrieval and
+article workflow APIs remain separate work. The health route reports application
+liveness.
 
 ## Tests
 
@@ -91,5 +177,7 @@ Tests use temporary SQLite databases and synthetic settings, with no live
 credentials or external service calls. They cover settings precedence and secret
 masking, every model field, database constraints and defaults, tenant indexes,
 request session cleanup and rollback, lifespan table creation, and thread access
-to in-memory SQLite. The Starlette dependency stays below 1.0 to retain
-compatibility with HTTPX 0.x in the test client.
+to in-memory SQLite, plus ConnectWise authentication, pagination, failure handling,
+ingestion replay, company isolation, configuration sync, and live route secrets.
+Remote client tests use `httpx.MockTransport`. The Starlette dependency stays
+below 1.0 to retain compatibility with HTTPX 0.x in the test client.

@@ -51,7 +51,7 @@
 **Produces:** KBDraftOutput schema and processor accepting injectable local/OpenAI provider; pending draft persistence and POST `/api/v1/kb/drafts/from-ticket/{ticket_id}`.
 
 - [ ] Write failing tests for generic vs tenant classification before scrubbing, missing resolution, malformed/provider-misdirected outputs, raw input/output secret scrubbing, pending status and mocked OpenAI failures.
-- [ ] Implement local extractive drafting and optional structured OpenAI provider; local classifier overrides unsafe scope/tenant selections and persists all required output.
+- [ ] Implement local extractive drafting, optional structured Ollama provider without API key, and optional structured OpenAI provider; local classifier overrides unsafe scope/tenant selections and persists all required output. Mock both remote transports in tests.
 - [ ] Run full pytest; review/fix and commit before Phase 5.
 
 ### Task 4: Phase 5 — RAG & Search Engineer
