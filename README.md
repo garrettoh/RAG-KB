@@ -134,6 +134,35 @@ flush writes; callers own commit/rollback. API dependencies expose
 set `application.state.connectwise_client_factory = lambda settings: adapter`;
 the request dependency owns closing that adapter.
 
+## Text sanitization
+
+`app.sanitizer.sanitize_text(text: str) -> str` is a deterministic, local text
+filter. It replaces recognized values with stable markers such as
+`[REDACTED_IP]`, `[REDACTED_PASSWORD]`, `[REDACTED_API_KEY]`,
+`[REDACTED_TOKEN]`, `[REDACTED_MAC]`, `[REDACTED_SERIAL]`,
+`[REDACTED_EMAIL]`, `[REDACTED_CREDENTIALS]`, and `[REDACTED_SIGNATURE]`.
+Repeated processing preserves those markers. It retains markdown, code fences,
+and surrounding procedure content while redacting inside code examples too.
+
+Rules cover validated IPv4/IPv6 (including compressed, bracketed, scoped and
+IPv4-mapped forms), common MAC formats, labeled passwords/API keys/tokens/hardware
+serials in assignments, JSON, YAML and command options, bearer tokens, common
+OpenAI/GitHub/AWS/Slack key prefixes, URL credentials and sensitive query values,
+and email addresses. Quoted multiline values and indented YAML block scalars are
+supported. Short terminal contact signatures, mobile signature lines and explicit
+confidentiality paragraphs are recognized conservatively; uncertain prose stays.
+
+This is a practical redaction layer, **not exhaustive PII or secret prevention**.
+Unlabeled or obfuscated credentials, encoded/escaped field names, unusual key
+formats, unquoted secrets containing whitespace, names, phone numbers outside
+recognized signatures, hostnames, company identifiers and unfamiliar signatures
+can remain. A valid four-part dotted number can be indistinguishable from an IP
+address. Contextual heuristics can still produce false positives or false
+negatives. Review generated content before sharing, and restrict access to raw
+SQLite tickets, which remain unchanged. Sanitization does not establish tenant
+authorization or change a document's tenant sensitivity. This phase exposes the
+filter; later drafting/indexing code must call it at their boundaries.
+
 ## Database and sessions
 
 - `RawTicket`: integer external `ticket_id`, integer `company_id`, `summary`,
