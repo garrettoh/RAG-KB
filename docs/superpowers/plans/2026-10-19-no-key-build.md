@@ -67,7 +67,7 @@
 ### Completion
 
 - [x] Whole-change review, resolve findings, rerun full tests on final code.
-- [ ] Push to requested GitHub repository and verify matching remote/local hash.
+- [x] Push to requested GitHub repository and verify matching remote/local hash.
 
 ## Validation record
 
@@ -83,3 +83,5 @@ The suite emits one upstream Starlette/AnyIO deprecation warning. `pip check` re
 An additional actual CLI/HTTP smoke run in temporary SQLite and disk-backed Qdrant seeded three pending drafts, explicitly reviewed/approved/indexed all three, and verified results: one global article with no tenant ID, two articles for tenant 101, two for tenant 202. Each tenant saw its own article plus the global article.
 
 Defaults are deterministic extractive drafting and lexical vector hashing. Optional Ollama, OpenAI, FastEmbed, and live ConnectWise/remote Qdrant adapters are implemented; live model/service compatibility was not verified without credentials or model installations. See README for the local workflow and deployment limitations.
+
+Published implementation: `70b5e1f` on `main` in `garrettoh/RAG-KB`. The full suite passed again on `main`; the remote and local implementation hashes matched after push.
