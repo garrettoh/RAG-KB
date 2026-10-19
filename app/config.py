@@ -1,6 +1,7 @@
 """Environment configuration; service credentials are optional during setup."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,11 @@ class Settings(BaseSettings):
     qdrant_collection: str = "knowledge_base"
 
     openai_api_key: SecretStr | None = None
+    draft_provider: Literal["local", "ollama", "openai"] = "local"
+    draft_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    openai_draft_model: str = Field(default="gpt-4o-mini", min_length=1)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_draft_model: str = Field(default="llama3.2", min_length=1)
 
 
 @lru_cache

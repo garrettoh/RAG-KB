@@ -10,6 +10,8 @@ from app import models  # Register model metadata before the lifespan creates ta
 from app.config import Settings, get_settings
 from app.database import Base, SessionLocal, create_db_engine, engine
 from app.api.webhooks import router as connectwise_router
+from app.api.kb import router as kb_router
+from app.agent_processor import DraftProviderError
 from app.connectwise_client import IntegrationError
 from app.ingestion import IngestionConflict
 
@@ -36,6 +38,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.engine = db_engine
     application.state.session_factory = session_factory
     application.include_router(connectwise_router)
+    application.include_router(kb_router)
+
+    @application.exception_handler(DraftProviderError)
+    async def draft_provider_error(request, exc: DraftProviderError):
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
     @application.exception_handler(IntegrationError)
     async def integration_error(request, exc: IntegrationError):

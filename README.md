@@ -47,6 +47,11 @@ after changing configuration. `Settings(_env_file=...)` selects a different file
 | `QDRANT_COLLECTION` | `knowledge_base` |
 | `QDRANT_API_KEY` | Optional API credential, masked as `SecretStr` |
 | `OPENAI_API_KEY` | Optional API credential, masked as `SecretStr` |
+| `DRAFT_PROVIDER` | `local`; deterministic extraction, or optional `ollama` / `openai` |
+| `DRAFT_TIMEOUT_SECONDS` | `30`; positive HTTP timeout, at most 120 seconds |
+| `OLLAMA_BASE_URL` | `http://localhost:11434`; user-managed Ollama server |
+| `OLLAMA_DRAFT_MODEL` | `llama3.2`; must already be installed in your Ollama server |
+| `OPENAI_DRAFT_MODEL` | `gpt-4o-mini`; configurable structured-output compatible model |
 
 `.env`, SQLite files, caches, and virtual environments are ignored by git. Keep
 real credentials out of source files. Default demo operation makes no remote
@@ -85,7 +90,7 @@ Internal analysis includes the ticket's `internalAnalysis`, time-entry
 includes the ticket's `resolution` and notes marked
 `addToResolutionFlag=true`. Other notes remain in the raw payload. Ingestion
 stores raw source content in SQLite; access to this database must be restricted.
-This phase does not create or approve KB drafts.
+Ingestion does not create or approve KB drafts.
 
 For live operation set `DEMO_MODE=false`, configure all five `CONNECTWISE_*`
 credentials/root settings above, plus independent `WEBHOOK_SECRET` and
@@ -161,7 +166,66 @@ address. Contextual heuristics can still produce false positives or false
 negatives. Review generated content before sharing, and restrict access to raw
 SQLite tickets, which remain unchanged. Sanitization does not establish tenant
 authorization or change a document's tenant sensitivity. This phase exposes the
-filter; later drafting/indexing code must call it at their boundaries.
+filter; drafting calls it before provider requests and again on provider output.
+
+## Knowledge drafts
+
+After ingesting a synthetic ticket, generate a reviewable draft:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/kb/drafts/from-ticket/2001
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/kb/drafts/from-ticket/1001
+```
+
+The response includes `article_id`, scope/target, category, title, summary,
+`markdown_steps` and `status=pending_review`. A missing stored ticket returns
+404; invalid IDs return 422. Live mode requires the management bearer header
+shown above. Each call creates a new draft for review; it never approves or
+publishes an article. Affected hardware/software appears in a dedicated markdown
+section without changing the database schema.
+
+The default `DRAFT_PROVIDER=local` is **deterministic extraction, not an LLM**.
+It takes actual resolution steps from the stored ticket, extracts known product
+and hardware terms, and marks an absent resolution as requiring review instead
+of inventing a fix. It makes no network requests or model downloads and requires
+no API key. Classification uses original ticket prose locally before redaction:
+IP addresses, recognizable hostnames, local infrastructure and known company
+context stay tenant scoped. Generic software issues can be global. Detection is
+heuristic and requires review. Company metadata alone does not force a generic
+ticket into tenant scope. All tenant drafts target the source company; provider
+output cannot select another company or downgrade locally detected sensitivity.
+
+For an actual local LLM, install/run Ollama yourself and install your chosen model,
+then set `DRAFT_PROVIDER=ollama`, `OLLAMA_DRAFT_MODEL` and optionally
+`OLLAMA_BASE_URL`. This app never installs or downloads models. The adapter sends
+`POST /api/chat` with `stream=false`, the JSON schema in `format`, and a bounded
+timeout. Missing server/model and malformed responses return actionable 502/503
+errors. See Ollama's official [structured output guide](https://docs.ollama.com/capabilities/structured-outputs)
+and [chat endpoint](https://docs.ollama.com/api/chat).
+
+For optional cloud drafting, set `DRAFT_PROVIDER=openai`, `OPENAI_API_KEY` and a
+compatible `OPENAI_DRAFT_MODEL`. The HTTPX adapter uses Chat Completions with a
+strict JSON schema and validates responses with Pydantic. Missing keys return
+503; refusals, malformed output and upstream failures return 502/503 without
+exposing remote response bodies. See the official OpenAI Docs
+[structured outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
+Neither optional provider silently falls back to local extraction.
+
+Only sanitized summary, internal notes and resolution are sent to model providers;
+the raw payload is never sent. Known source company names/identifiers from
+company metadata are replaced with `[REDACTED_COMPANY]`. Model output is sanitized
+again before persistence. The prompt treats ticket content as untrusted data;
+this does not guarantee immunity to prompt injection or unsupported model claims.
+Unknown company names/hostnames and other unrecognized sensitive text can remain
+as described above. Review every draft before sharing or publishing.
+
+Python interfaces in `app.agent_processor` are `KBDraftOutput`, `DraftInput`,
+`LocalDraftProvider()`, `OllamaDraftProvider(settings, transport=...)`,
+`OpenAIDraftProvider(settings, transport=...)`, `create_draft_provider(settings)`,
+and async `process_ticket(session, raw_ticket, provider) -> KBDraft`. Providers
+expose async `generate(sanitized_input)` and `aclose()`. The processor flushes;
+the caller commits or rolls back. Set `application.state.draft_provider_factory`
+to inject a provider; the route dependency closes it after success or failure.
 
 ## Database and sessions
 
